@@ -563,9 +563,7 @@ class TestOnLinkNetworks(unittest.TestCase):
             # Not resolved yet, so there is no MAC to stamp.
             {"ifindex": 2, "dst": "10.122.0.24", "lladdr": None},
         ]
-        entry = self.route_controller._parse_route_entry_msg(
-            self.connected_route_msg()
-        )
+        entry = self.route_controller._parse_route_entry_msg(self.connected_route_msg())
         assert entry is not None
         self.route_controller.add_new_route_entry(entry)
 
@@ -586,9 +584,7 @@ class TestOnLinkNetworks(unittest.TestCase):
         self, mock_fetch_mac
     ):
         mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
-        entry = self.route_controller._parse_route_entry_msg(
-            self.connected_route_msg()
-        )
+        entry = self.route_controller._parse_route_entry_msg(self.connected_route_msg())
         assert entry is not None
         self.route_controller.add_new_route_entry(entry)
         self.mock_bess_controller.add_route_to_module.reset_mock()
@@ -630,9 +626,7 @@ class TestOnLinkNetworks(unittest.TestCase):
         self, mock_fetch_mac
     ):
         mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
-        entry = self.route_controller._parse_route_entry_msg(
-            self.connected_route_msg()
-        )
+        entry = self.route_controller._parse_route_entry_msg(self.connected_route_msg())
         assert entry is not None
         self.route_controller.add_new_route_entry(entry)
         neighbor = {
@@ -660,9 +654,7 @@ class TestOnLinkNetworks(unittest.TestCase):
             {"ifindex": 2, "dst": f"10.122.0.{n}", "lladdr": DEFAULT_MAC_ADDRESS}
             for n in (21, 22, 23)
         ]
-        entry = self.route_controller._parse_route_entry_msg(
-            self.connected_route_msg()
-        )
+        entry = self.route_controller._parse_route_entry_msg(self.connected_route_msg())
         assert entry is not None
         with self.assertLogs("conf.route_control", level="ERROR") as logs:
             self.route_controller.add_new_route_entry(entry)
@@ -677,18 +669,14 @@ class TestOnLinkNetworks(unittest.TestCase):
         self.ndb.neighbours.dump.return_value = [
             {"ifindex": 2, "dst": "10.122.0.21", "lladdr": DEFAULT_MAC_ADDRESS},
         ]
-        entry = self.route_controller._parse_route_entry_msg(
-            self.connected_route_msg()
-        )
+        entry = self.route_controller._parse_route_entry_msg(self.connected_route_msg())
         assert entry is not None
         self.route_controller.add_new_route_entry(entry)
 
         self.route_controller.delete_route_entry(entry)
 
         self.mock_bess_controller.delete_module_route_entry.assert_called_once()
-        removed = (
-            self.mock_bess_controller.delete_module_route_entry.call_args.args[0]
-        )
+        removed = self.mock_bess_controller.delete_module_route_entry.call_args.args[0]
         self.assertEqual(removed.dest_prefix, "10.122.0.21")
         self.assertEqual(removed.prefix_len, 32)
 
@@ -705,9 +693,7 @@ class TestOnLinkNetworks(unittest.TestCase):
         self.ndb.neighbours.dump.return_value = [
             {"ifindex": 2, "dst": "10.122.0.21", "lladdr": DEFAULT_MAC_ADDRESS},
         ]
-        entry = self.route_controller._parse_route_entry_msg(
-            self.connected_route_msg()
-        )
+        entry = self.route_controller._parse_route_entry_msg(self.connected_route_msg())
         assert entry is not None
         self.route_controller.add_new_route_entry(entry)
 
@@ -715,7 +701,7 @@ class TestOnLinkNetworks(unittest.TestCase):
         # going away takes the host routes with it.
         self.ndb.neighbours.dump.return_value = []
         self.mock_bess_controller.delete_module_route_entry.assert_not_called()
-        network = list(self.route_controller._on_link_networks["access"])[0]
+        network = next(iter(self.route_controller._on_link_networks["access"]))
         self.assertIn(
             "10.122.0.21", self.route_controller._on_link_networks["access"][network]
         )
