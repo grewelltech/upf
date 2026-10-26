@@ -466,13 +466,22 @@ class RouteController:
             host_ip (str): The host's address.
 
         Returns:
-            bool: True if the host belongs to an attached network on this
-                interface and a route was programmed for it.
+            bool: True if this call took responsibility for the host -- it is
+                on an attached network on this interface and was not already
+                being handled. False means it was not ours, was already
+                recorded, or the network is at its limit.
         """
+        if not validate_ipv4(host_ip):
+            return False
+
         network = self._on_link_network_for(interface, host_ip)
         if network is None:
             return False
 
+        # Membership means the host has been handed to add_new_route_entry,
+        # which either programmed it or is waiting on its MAC. Recording it
+        # before the call keeps a second neighbour event for the same host
+        # from queueing the work twice while the first is still resolving.
         hosts = self._on_link_networks[interface][network]
         if host_ip in hosts:
             return False
@@ -516,7 +525,12 @@ class RouteController:
         return None
 
     def _neighbor_ips_on(self, interface: str) -> list[str]:
-        """Lists the addresses the kernel has resolved on an interface."""
+        """Lists the addresses the kernel has resolved on an interface.
+
+        The dump covers every family. An IPv6 neighbour is not filtered out
+        here because it cannot match an IPv4 network later: containment across
+        families is False rather than an error.
+        """
         found: list[str] = []
         try:
             neighbors = self._ndb.neighbours.dump()
@@ -914,6 +928,12 @@ class RouteController:
             self._unresolved_arp_queries_cache.clear()
             self._neighbor_cache.clear()
             self._module_gate_count_cache.clear()
+            # Attached networks are forgotten with the rest: a reload has
+            # recreated the BESS modules, so every host route has to be
+            # programmed again. Remembering them here would make
+            # _add_on_link_network skip them as already known and their hosts
+            # would stay unreachable until the route itself was replaced.
+            self._on_link_networks.clear()
         self.bootstrap_routes()
         signal.pause()
         logger.info("Received: %i reconfigured", number)

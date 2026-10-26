@@ -733,3 +733,33 @@ class TestOnLinkNetworks(unittest.TestCase):
         added = self.mock_bess_controller.add_route_to_module.call_args.args[0]
         self.assertEqual(added.dest_prefix, "10.126.0.0")
         self.assertEqual(added.prefix_len, 24)
+
+    @patch("conf.route_control.fetch_mac")
+    def test_given_attached_network_when_reconfigured_then_host_routes_are_programmed_again(
+        self, mock_fetch_mac
+    ):
+        """SIGHUP means the pipeline was reloaded and BESS lost its modules.
+
+        up4.bess signals the daemon on every reload, so reconfigure has to
+        reprogram everything. A network remembered across the reset would be
+        skipped as already known and its hosts would never be reinstated.
+        """
+        mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
+        self.ndb.neighbours.dump.return_value = [
+            {"ifindex": 2, "dst": "10.122.0.21", "lladdr": DEFAULT_MAC_ADDRESS},
+        ]
+        route_msg = self.connected_route_msg()
+        entry = self.route_controller._parse_route_entry_msg(route_msg)
+        assert entry is not None
+        self.route_controller.add_new_route_entry(entry)
+        self.assertEqual(self.mock_bess_controller.add_route_to_module.call_count, 1)
+
+        self.ipr.get_routes.return_value = [route_msg]
+        self.mock_bess_controller.add_route_to_module.reset_mock()
+        with patch("conf.route_control.signal.pause"):
+            self.route_controller.reconfigure(1)
+
+        self.mock_bess_controller.add_route_to_module.assert_called_once()
+        added = self.mock_bess_controller.add_route_to_module.call_args.args[0]
+        self.assertEqual(added.dest_prefix, "10.122.0.21")
+        self.assertEqual(added.prefix_len, 32)
