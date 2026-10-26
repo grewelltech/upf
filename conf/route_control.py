@@ -33,6 +33,27 @@ KEY_INTERFACE = "RTA_OIF"
 KEY_DESTINATION_IP = "RTA_DST"
 KEY_DESTINATION_GATEWAY_IP = "RTA_GATEWAY"
 KEY_DESTINATION_PREFIX_LENGTH = "dst_len"
+KEY_ROUTE_TYPE = "type"
+KEY_ROUTE_TABLE = "table"
+
+# Route types (rtnetlink rtm_type). Only unicast routes describe somewhere to
+# forward to; local and broadcast entries name addresses the host answers for
+# itself, and they have no gateway either, so they have to be told apart from
+# connected routes rather than by the absence of a gateway.
+RTN_UNICAST = 1
+# The kernel's local table, which holds those local and broadcast entries.
+ROUTE_TABLE_LOCAL = 255
+
+# An on-link network is programmed as one route per neighbour (see
+# RouteController._add_on_link_network), so the number of neighbours it can
+# contribute is bounded. A /24 of hosts that all talk to the UPF would
+# otherwise consume a gate each, and running out of gates fails the same silent
+# way this module exists to fix. Access and core networks carry a handful of
+# peers, so this is generous; it is a guard, not a budget.
+MAX_ON_LINK_NEIGHBORS_PER_NETWORK = 512
+
+# A single IPv4 host, as a prefix length.
+IPV4_HOST_PREFIX_LEN = 32
 
 
 @dataclass
@@ -43,6 +64,12 @@ class RouteEntry:
     interface: str | None = field(default=None)
     dest_prefix: str | None = field(default=None)
     prefix_len: int = field(default=0)
+    # on_link marks a route with no gateway: the destination network is
+    # attached to this interface, so there is no single next hop to send it
+    # to. Every host on it is reached directly, with its own MAC, which the
+    # datapath can only express as one route per host. next_hop_ip is None on
+    # such an entry; the per-host entries derived from it carry a next hop.
+    on_link: bool = field(default=False)
 
 
 @dataclass
@@ -330,6 +357,13 @@ class RouteController:
         self._unresolved_arp_queries_cache: dict[str, RouteEntry] = {}
         self._neighbor_cache: dict[str, NeighborEntry] = {}
         self._module_gate_count_cache: dict[str, int] = defaultdict(lambda: 0)
+        # Networks attached to a watched interface, and the host addresses
+        # already programmed for each: interface -> network -> {host, ...}.
+        # An attached network has no next hop of its own, so it is carried as
+        # one route per host (_add_on_link_network).
+        self._on_link_networks: dict[
+            str, dict[ipaddress.IPv4Network, set[str]]
+        ] = defaultdict(dict)
 
         self._lock = Lock()
 
@@ -375,6 +409,10 @@ class RouteController:
         Args:
             route_entry (RouteEntry): The route entry.
         """
+        if route_entry.on_link:
+            self._add_on_link_network(route_entry)
+            return
+
         if not validate_ipv4(route_entry.next_hop_ip):
             return
         if not (next_hop_mac := fetch_mac(self._ndb, route_entry.next_hop_ip)):
@@ -386,6 +424,135 @@ class RouteController:
             return
 
         self._add_neighbor(route_entry, next_hop_mac)
+
+    def _add_on_link_network(self, route_entry: RouteEntry) -> None:
+        """Registers a network attached to a watched interface.
+
+        The datapath reaches a destination by looking up a prefix and stamping
+        a single MAC onto the packet, so an attached network cannot be one
+        route: every host on it has its own MAC. It is carried as one route per
+        host instead. Hosts already in the kernel's neighbour table are
+        programmed now; later arrivals come in through the neighbour event
+        handler.
+
+        Args:
+            route_entry (RouteEntry): The attached network.
+        """
+        network = self._parse_network(route_entry)
+        if network is None or route_entry.interface is None:
+            return
+
+        networks = self._on_link_networks[route_entry.interface]
+        if network in networks:
+            logger.debug(
+                "Attached network %s on %s already known", network, route_entry.interface
+            )
+            return
+
+        networks[network] = set()
+        logger.info(
+            "Attached network %s on %s: programming one route per host",
+            network,
+            route_entry.interface,
+        )
+        for host_ip in self._neighbor_ips_on(route_entry.interface):
+            self._add_on_link_host(route_entry.interface, host_ip)
+
+    def _add_on_link_host(self, interface: str, host_ip: str) -> bool:
+        """Programs a host route for an address on an attached network.
+
+        Args:
+            interface (str): The interface the host is attached to.
+            host_ip (str): The host's address.
+
+        Returns:
+            bool: True if the host belongs to an attached network on this
+                interface and a route was programmed for it.
+        """
+        network = self._on_link_network_for(interface, host_ip)
+        if network is None:
+            return False
+
+        hosts = self._on_link_networks[interface][network]
+        if host_ip in hosts:
+            return False
+        if len(hosts) >= MAX_ON_LINK_NEIGHBORS_PER_NETWORK:
+            logger.error(
+                "Attached network %s on %s already has %i host routes; not adding %s. "
+                "Traffic to hosts beyond this limit is dropped by the datapath. "
+                "Raise MAX_ON_LINK_NEIGHBORS_PER_NETWORK if this network really is "
+                "this busy.",
+                network,
+                interface,
+                len(hosts),
+                host_ip,
+            )
+            return False
+
+        hosts.add(host_ip)
+        self.add_new_route_entry(
+            RouteEntry(
+                dest_prefix=host_ip,
+                next_hop_ip=host_ip,
+                interface=interface,
+                prefix_len=IPV4_HOST_PREFIX_LEN,
+            )
+        )
+        return True
+
+    def _on_link_network_for(
+        self, interface: str, host_ip: str
+    ) -> ipaddress.IPv4Network | None:
+        """Finds the attached network on interface that contains host_ip."""
+        if interface not in self._on_link_networks:
+            return None
+        try:
+            address = ipaddress.ip_address(host_ip)
+        except ValueError:
+            return None
+        for network in self._on_link_networks[interface]:
+            if address in network:
+                return network
+        return None
+
+    def _neighbor_ips_on(self, interface: str) -> list[str]:
+        """Lists the addresses the kernel has resolved on an interface."""
+        found: list[str] = []
+        try:
+            neighbors = self._ndb.neighbours.dump()
+        except Exception:
+            logger.exception("Error reading the neighbour table")
+            return found
+        for neighbor in neighbors:
+            try:
+                if not neighbor["lladdr"]:
+                    continue
+                if self._interface_name(neighbor["ifindex"]) != interface:
+                    continue
+                found.append(neighbor["dst"])
+            except (KeyError, TypeError):
+                continue
+        return found
+
+    def _interface_name(self, interface_index) -> str | None:
+        """Resolves an interface index to its name."""
+        try:
+            return self._ndb.interfaces[int(interface_index)].get("ifname")
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_network(route_entry: RouteEntry) -> ipaddress.IPv4Network | None:
+        """Builds the network a route entry describes."""
+        try:
+            return ipaddress.ip_network(
+                f"{route_entry.dest_prefix}/{route_entry.prefix_len}", strict=False
+            )
+        except (ValueError, TypeError):
+            logger.error(
+                "Could not read the network from route entry %s", route_entry
+            )
+            return None
 
     def _add_neighbor(self, route_entry: RouteEntry, next_hop_mac: str) -> None:
         """Adds the route in BESS module.
@@ -473,16 +640,32 @@ class RouteController:
             netlink_message (dict): The netlink message.
         """
         attr_dict = dict(netlink_message["attrs"])
-        route_entry = self._unresolved_arp_queries_cache.get(
-            attr_dict[KEY_NETWORK_LAYER_DEST_ADDR]
-        )
-        gateway_mac = attr_dict[KEY_LINK_LAYER_ADDRESS]
+        neighbor_ip = attr_dict.get(KEY_NETWORK_LAYER_DEST_ADDR)
+        gateway_mac = attr_dict.get(KEY_LINK_LAYER_ADDRESS)
+        if not neighbor_ip or not gateway_mac:
+            return
+
+        route_entry = self._unresolved_arp_queries_cache.get(neighbor_ip)
         if route_entry:
             self._add_neighbor(route_entry, gateway_mac)
             if route_entry.next_hop_ip is not None:
                 del self._unresolved_arp_queries_cache[route_entry.next_hop_ip]
             else:
                 logger.warning("next_hop_ip is None, cannot delete from cache")
+            return
+
+        # Not an address we were waiting on. It may still be a host on a
+        # network attached to one of the watched interfaces, which is reached
+        # directly and so needs a route of its own.
+        interface = self._interface_name(netlink_message.get("ifindex"))
+        if interface is None:
+            return
+        if self._add_on_link_host(interface, neighbor_ip):
+            logger.info(
+                "Host %s appeared on attached network via %s: route added",
+                neighbor_ip,
+                interface,
+            )
 
     def _create_module_links(
         self,
@@ -525,6 +708,10 @@ class RouteController:
 
     def delete_route_entry(self, route_entry: RouteEntry) -> None:
         """Deletes a route entry from BESS and the neighbor cache."""
+        if route_entry.on_link:
+            self._delete_on_link_network(route_entry)
+            return
+
         if route_entry.next_hop_ip is not None:
             if next_hop := self._neighbor_cache.get(route_entry.next_hop_ip):
                 try:
@@ -576,6 +763,43 @@ class RouteController:
                 logger.info("Neighbor %s does not exist", route_entry.next_hop_ip)
         else:
             logger.warning("next_hop_ip is None, cannot delete route entry")
+
+    def _delete_on_link_network(self, route_entry: RouteEntry) -> None:
+        """Removes an attached network and the host routes derived from it.
+
+        Host routes are removed only when the network itself goes away, never
+        because a host fell quiet. A neighbour entry ages out when it stops
+        being used, and tearing its route down on that basis would drop the
+        traffic that comes next -- the failure this module exists to prevent.
+        A stale MAC is re-resolved by the existing probe path instead.
+
+        Args:
+            route_entry (RouteEntry): The attached network being removed.
+        """
+        network = self._parse_network(route_entry)
+        if network is None or route_entry.interface is None:
+            return
+
+        hosts = self._on_link_networks.get(route_entry.interface, {}).pop(network, None)
+        if hosts is None:
+            logger.info("Attached network %s was not known", network)
+            return
+
+        logger.info(
+            "Attached network %s on %s removed: dropping %i host routes",
+            network,
+            route_entry.interface,
+            len(hosts),
+        )
+        for host_ip in hosts:
+            self.delete_route_entry(
+                RouteEntry(
+                    dest_prefix=host_ip,
+                    next_hop_ip=host_ip,
+                    interface=route_entry.interface,
+                    prefix_len=IPV4_HOST_PREFIX_LEN,
+                )
+            )
 
     def _ping_missing_entries(self):
         """Pings missing entries every 10 seconds.
@@ -710,7 +934,9 @@ class RouteController:
             logger.exception("Error parsing route entry message")
             return None
 
-        if not (next_hop_ip := attr_dict.get(KEY_DESTINATION_GATEWAY_IP)):
+        next_hop_ip = attr_dict.get(KEY_DESTINATION_GATEWAY_IP)
+        on_link = not next_hop_ip
+        if on_link and not self._is_on_link_candidate(route_entry):
             return None
 
         if not attr_dict.get(KEY_INTERFACE):
@@ -745,7 +971,31 @@ class RouteController:
             next_hop_ip=next_hop_ip,
             interface=interface,
             prefix_len=route_entry[KEY_DESTINATION_PREFIX_LENGTH],
+            on_link=on_link,
         )
+
+    @staticmethod
+    def _is_on_link_candidate(route_entry: dict) -> bool:
+        """Reports whether a gateway-less route describes an attached network.
+
+        A route with no gateway is either a connected network or one of the
+        kernel's own local/broadcast entries. The latter live in the local
+        table and are not unicast, and programming them would point the
+        datapath at addresses the host answers for itself. A default route
+        with no gateway is not an attached network either.
+
+        Args:
+            route_entry (dict): A netlink route entry message.
+
+        Returns:
+            bool: True if the route describes a network attached to an
+                interface.
+        """
+        if route_entry.get(KEY_ROUTE_TABLE) == ROUTE_TABLE_LOCAL:
+            return False
+        if route_entry.get(KEY_ROUTE_TYPE, RTN_UNICAST) != RTN_UNICAST:
+            return False
+        return bool(route_entry.get(KEY_DESTINATION_PREFIX_LENGTH))
 
 
 def get_route_module_name(interface_name: str) -> str:
