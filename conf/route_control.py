@@ -337,8 +337,10 @@ class RouteController:
             interfaces: list of interfaces
 
         Attributes:
-            _unresolved_arp_queries_cache (dict[str, RouteEntry]):
-                A cache to store unresolved ARP queries.
+            _unresolved_arp_queries_cache (dict[tuple[str, str, int], RouteEntry]):
+                Routes waiting for their next hop's MAC address, by
+                interface, prefix and prefix length. Several can wait for
+                the same next hop.
             _neighbor_cache (dict[str, RouteEntry]):
                 A cache to keep track of entries add in Bess.
             _module_gate_count_cache (Dict[str, int]):
@@ -351,7 +353,7 @@ class RouteController:
                 The next hop of each route added in BESS, by interface,
                 prefix and prefix length.
         """
-        self._unresolved_arp_queries_cache: dict[str, RouteEntry] = {}
+        self._unresolved_arp_queries_cache: dict[tuple[str, str, int], RouteEntry] = {}
         self._neighbor_cache: dict[str, NeighborEntry] = {}
         self._module_gate_count_cache: dict[str, int] = defaultdict(lambda: 0)
         self._on_link_networks: OnLinkNetworks = defaultdict(dict)
@@ -437,6 +439,8 @@ class RouteController:
 
         if not validate_ipv4(route_entry.next_hop_ip):
             return
+        # This route replaces any version of it still waiting for a next hop.
+        self._unresolved_arp_queries_cache.pop(route_key(route_entry), None)
         if self._programmed_routes.get(route_key(route_entry)) == (
             route_entry.next_hop_ip
         ):
@@ -707,8 +711,8 @@ class RouteController:
     def add_unresolved_new_neighbor(self, netlink_message: dict) -> None:
         """Handle new neighbor event.
 
-        It will add the neighbor if it was in the unresolved ARP queries cache.
-        A neighbor on a network attached to a watched interface is reached
+        Adds every route that was waiting for this neighbor's MAC address. A
+        neighbor on a network attached to a watched interface is reached
         directly and gets a route of its own as well.
 
         Args:
@@ -718,20 +722,21 @@ class RouteController:
         neighbor_ip = attr_dict.get(KEY_NETWORK_LAYER_DEST_ADDR)
         gateway_mac = attr_dict.get(KEY_LINK_LAYER_ADDRESS)
         if not neighbor_ip or not gateway_mac:
+            # The kernel reports a neighbor it is resolving, or failed to
+            # resolve, without a MAC address; its routes keep waiting.
             return
-
-        route_entry = self._unresolved_arp_queries_cache.get(neighbor_ip)
-        if route_entry:
-            self._add_neighbor(route_entry, gateway_mac)
-            if route_entry.next_hop_ip is not None:
-                del self._unresolved_arp_queries_cache[route_entry.next_hop_ip]
-            else:
-                logger.warning("next_hop_ip is None, cannot delete from cache")
+        waiting = [
+            key
+            for key, route_entry in self._unresolved_arp_queries_cache.items()
+            if route_entry.next_hop_ip == neighbor_ip
+        ]
+        for key in waiting:
+            self._add_neighbor(self._unresolved_arp_queries_cache.pop(key), gateway_mac)
 
         # Both, rather than one or the other: a gateway can itself be a host on
-        # an attached network, and resolving it answers only the route that was
-        # waiting. Its own address still needs a host route, and shares the
-        # gate just resolved for it.
+        # an attached network, and resolving it answers only the routes that
+        # were waiting on it. Its own address still needs a host route, and
+        # shares the gate just resolved for it.
         interface = self._interface_name(netlink_message.get("ifindex"))
         if interface is None:
             return
@@ -796,6 +801,10 @@ class RouteController:
             return
 
         key = route_key(route_entry)
+        if self._unresolved_arp_queries_cache.pop(key, None) is not None:
+            logger.info(
+                "Route entry %s deleted while waiting for its next hop", route_entry
+            )
         if (programmed_next_hop := self._programmed_routes.pop(key, None)) is None:
             logger.info("Route entry %s is not in BESS", route_entry)
             return
@@ -897,7 +906,12 @@ class RouteController:
         """
         while True:
             with self._lock:
-                missing_arp_entries = list(self._unresolved_arp_queries_cache.keys())
+                missing_arp_entries = sorted(
+                    {
+                        route_entry.next_hop_ip
+                        for route_entry in self._unresolved_arp_queries_cache.values()
+                    }
+                )
                 logger.info("Missing ARP entries: %s", missing_arp_entries)
             for ip in missing_arp_entries:
                 try:
@@ -915,7 +929,7 @@ class RouteController:
             route_entry (NeighborEntry): The neighbor entry.
         """
         if route_entry.next_hop_ip is not None:
-            self._unresolved_arp_queries_cache[route_entry.next_hop_ip] = route_entry
+            self._unresolved_arp_queries_cache[route_key(route_entry)] = route_entry
             logger.info("Adding entry %s in arp table by pinging", route_entry)
             send_ping(route_entry.next_hop_ip)
         else:
