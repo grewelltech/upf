@@ -35,6 +35,7 @@ KEY_DESTINATION_GATEWAY_IP = "RTA_GATEWAY"
 KEY_DESTINATION_PREFIX_LENGTH = "dst_len"
 KEY_ROUTE_TYPE = "type"
 KEY_ROUTE_TABLE = "table"
+KEY_ROUTE_SCOPE = "scope"
 
 # Route types (rtnetlink rtm_type). Only unicast routes describe somewhere to
 # forward to; local and broadcast entries name addresses the host answers for
@@ -43,6 +44,11 @@ KEY_ROUTE_TABLE = "table"
 RTN_UNICAST = 1
 # The kernel's local table, which holds those local and broadcast entries.
 ROUTE_TABLE_LOCAL = 255
+# Scope of a route to an address the host holds itself (RT_SCOPE_HOST). Checked
+# as well as the type, because each signal is only acted on when it is present
+# and a local entry must not be programmed on the strength of a missing field.
+# pyroute2 may render it as the number or the name.
+ROUTE_SCOPE_HOST = (254, "host")
 
 # An on-link network is programmed as one route per neighbour (see
 # RouteController._add_on_link_network), so the number of neighbours it can
@@ -999,10 +1005,14 @@ class RouteController:
         """Reports whether a gateway-less route describes an attached network.
 
         A route with no gateway is either a connected network or one of the
-        kernel's own local/broadcast entries. The latter live in the local
-        table and are not unicast, and programming them would point the
-        datapath at addresses the host answers for itself. A default route
-        with no gateway is not an attached network either.
+        kernel's own local/broadcast entries. The latter would point the
+        datapath at addresses the host answers for itself, and the missing
+        gateway is exactly what stops telling them apart, so three independent
+        signals are used: they live in the local table, they are not unicast,
+        and a local one has host scope. Each is only acted on when the field
+        is present, so no one of them has to be relied on alone.
+
+        A default route with no gateway is not an attached network either.
 
         Args:
             route_entry (dict): A netlink route entry message.
@@ -1014,6 +1024,8 @@ class RouteController:
         if route_entry.get(KEY_ROUTE_TABLE) == ROUTE_TABLE_LOCAL:
             return False
         if route_entry.get(KEY_ROUTE_TYPE, RTN_UNICAST) != RTN_UNICAST:
+            return False
+        if route_entry.get(KEY_ROUTE_SCOPE) in ROUTE_SCOPE_HOST:
             return False
         return bool(route_entry.get(KEY_DESTINATION_PREFIX_LENGTH))
 

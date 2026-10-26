@@ -527,7 +527,13 @@ class TestOnLinkNetworks(unittest.TestCase):
         Programming them would point the datapath at addresses the host
         answers for itself.
         """
-        for extra in ({"table": 255}, {"type": 2}, {"type": 3}):
+        for extra in (
+            {"table": 255},
+            {"type": 2},
+            {"type": 3},
+            {"scope": 254},
+            {"scope": "host"},
+        ):
             with self.subTest(extra=extra):
                 self.assertIsNone(
                     self.route_controller._parse_route_entry_msg(
@@ -763,3 +769,62 @@ class TestOnLinkNetworks(unittest.TestCase):
         added = self.mock_bess_controller.add_route_to_module.call_args.args[0]
         self.assertEqual(added.dest_prefix, "10.122.0.21")
         self.assertEqual(added.prefix_len, 32)
+
+    @patch("conf.route_control.fetch_mac")
+    def test_given_gateway_on_an_attached_network_when_both_are_added_then_one_gate_is_shared(
+        self, mock_fetch_mac
+    ):
+        """The router is normally a host on the network it is the gateway for.
+
+        Its host route and the routes that use it as a next hop share one next
+        hop, so they must share one gate and one Update module rather than
+        each taking their own.
+        """
+        mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
+        self.ndb.neighbours.dump.return_value = [
+            {"ifindex": 2, "dst": "10.122.0.1", "lladdr": DEFAULT_MAC_ADDRESS},
+        ]
+        attached = self.route_controller._parse_route_entry_msg(
+            self.connected_route_msg()
+        )
+        assert attached is not None
+        self.route_controller.add_new_route_entry(attached)
+
+        via_gateway_msg = self.connected_route_msg(dst="10.126.0.0")
+        via_gateway_msg["attrs"].append(("RTA_GATEWAY", "10.122.0.1"))
+        via_gateway = self.route_controller._parse_route_entry_msg(via_gateway_msg)
+        assert via_gateway is not None
+        self.route_controller.add_new_route_entry(via_gateway)
+
+        gates = {
+            call.kwargs["gate_idx"]
+            for call in self.mock_bess_controller.add_route_to_module.call_args_list
+        }
+        self.assertEqual(len(gates), 1, "the shared next hop should share one gate")
+        self.mock_bess_controller.create_module.assert_called_once()
+        self.assertEqual(
+            self.route_controller._neighbor_cache["10.122.0.1"].route_count, 2
+        )
+
+    @patch("conf.route_control.fetch_mac")
+    def test_given_two_attached_networks_on_one_interface_then_both_are_served(
+        self, mock_fetch_mac
+    ):
+        mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
+        self.ndb.neighbours.dump.return_value = [
+            {"ifindex": 2, "dst": "10.122.0.21", "lladdr": DEFAULT_MAC_ADDRESS},
+            {"ifindex": 2, "dst": "10.123.0.30", "lladdr": DEFAULT_MAC_ADDRESS},
+        ]
+        for prefix in ("10.122.0.0", "10.123.0.0"):
+            entry = self.route_controller._parse_route_entry_msg(
+                self.connected_route_msg(dst=prefix)
+            )
+            assert entry is not None
+            self.route_controller.add_new_route_entry(entry)
+
+        added = sorted(
+            call.args[0].dest_prefix
+            for call in self.mock_bess_controller.add_route_to_module.call_args_list
+        )
+        self.assertEqual(added, ["10.122.0.21", "10.123.0.30"])
+        self.assertEqual(len(self.route_controller._on_link_networks["access"]), 2)
