@@ -612,7 +612,7 @@ class TestOnLinkNetworks(unittest.TestCase):
     def test_given_no_attached_network_when_host_appears_then_no_route_is_added(
         self, mock_fetch_mac
     ):
-        """A neighbour nobody asked about and on no attached network is ignored."""
+        """A neighbor nobody asked about and on no attached network is ignored."""
         mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
         self.route_controller.add_unresolved_new_neighbor(
             {
@@ -696,7 +696,7 @@ class TestOnLinkNetworks(unittest.TestCase):
     def test_given_host_route_when_the_host_falls_quiet_then_the_route_stays(
         self, mock_fetch_mac
     ):
-        """A neighbour ages out when it stops being used.
+        """A neighbor ages out when it stops being used.
 
         Tearing its route down on that basis would drop the traffic that comes
         next, which is the failure this code exists to prevent.
@@ -711,7 +711,7 @@ class TestOnLinkNetworks(unittest.TestCase):
         assert entry is not None
         self.route_controller.add_new_route_entry(entry)
 
-        # No neighbour-removal path exists, and none should: only the network
+        # No neighbor-removal path exists, and none should: only the network
         # going away takes the host routes with it.
         self.ndb.neighbours.dump.return_value = []
         self.mock_bess_controller.delete_module_route_entry.assert_not_called()

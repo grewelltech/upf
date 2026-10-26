@@ -50,8 +50,8 @@ ROUTE_TABLE_LOCAL = 255
 # pyroute2 may render it as the number or the name.
 ROUTE_SCOPE_HOST = (254, "host")
 
-# An on-link network is programmed as one route per neighbour (see
-# RouteController._add_on_link_network), so the number of neighbours it can
+# An on-link network is programmed as one route per neighbor (see
+# RouteController._add_on_link_network), so the number of neighbors it can
 # contribute is bounded. A /24 of hosts that all talk to the UPF would
 # otherwise consume a gate each, and running out of gates fails the same silent
 # way this module exists to fix. Access and core networks carry a handful of
@@ -60,6 +60,10 @@ MAX_ON_LINK_NEIGHBORS_PER_NETWORK = 512
 
 # A single IPv4 host, as a prefix length.
 IPV4_HOST_PREFIX_LEN = 32
+
+# Networks attached to a watched interface, and the host addresses already
+# programmed for each: interface -> network -> {host, ...}.
+OnLinkNetworks = dict[str, dict[ipaddress.IPv4Network, set[str]]]
 
 
 @dataclass
@@ -367,9 +371,7 @@ class RouteController:
         # already programmed for each: interface -> network -> {host, ...}.
         # An attached network has no next hop of its own, so it is carried as
         # one route per host (_add_on_link_network).
-        self._on_link_networks: dict[
-            str, dict[ipaddress.IPv4Network, set[str]]
-        ] = defaultdict(dict)
+        self._on_link_networks: OnLinkNetworks = defaultdict(dict)
 
         self._lock = Lock()
 
@@ -437,8 +439,8 @@ class RouteController:
         The datapath reaches a destination by looking up a prefix and stamping
         a single MAC onto the packet, so an attached network cannot be one
         route: every host on it has its own MAC. It is carried as one route per
-        host instead. Hosts already in the kernel's neighbour table are
-        programmed now; later arrivals come in through the neighbour event
+        host instead. Hosts already in the kernel's neighbor table are
+        programmed now; later arrivals come in through the neighbor event
         handler.
 
         Args:
@@ -451,7 +453,9 @@ class RouteController:
         networks = self._on_link_networks[route_entry.interface]
         if network in networks:
             logger.debug(
-                "Attached network %s on %s already known", network, route_entry.interface
+                "Attached network %s on %s already known",
+                network,
+                route_entry.interface,
             )
             return
 
@@ -486,7 +490,7 @@ class RouteController:
 
         # Membership means the host has been handed to add_new_route_entry,
         # which either programmed it or is waiting on its MAC. Recording it
-        # before the call keeps a second neighbour event for the same host
+        # before the call keeps a second neighbor event for the same host
         # from queueing the work twice while the first is still resolving.
         hosts = self._on_link_networks[interface][network]
         if host_ip in hosts:
@@ -533,7 +537,7 @@ class RouteController:
     def _neighbor_ips_on(self, interface: str) -> list[str]:
         """Lists the addresses the kernel has resolved on an interface.
 
-        The dump covers every family. An IPv6 neighbour is not filtered out
+        The dump covers every family. An IPv6 neighbor is not filtered out
         here because it cannot match an IPv4 network later: containment across
         families is False rather than an error.
         """
@@ -541,7 +545,7 @@ class RouteController:
         try:
             neighbors = self._ndb.neighbours.dump()
         except Exception:
-            logger.exception("Error reading the neighbour table")
+            logger.exception("Error reading the neighbor table")
             return found
         for neighbor in neighbors:
             try:
@@ -569,9 +573,7 @@ class RouteController:
                 f"{route_entry.dest_prefix}/{route_entry.prefix_len}", strict=False
             )
         except (ValueError, TypeError):
-            logger.error(
-                "Could not read the network from route entry %s", route_entry
-            )
+            logger.error("Could not read the network from route entry %s", route_entry)
             return None
 
     def _add_neighbor(self, route_entry: RouteEntry, next_hop_mac: str) -> None:
@@ -788,7 +790,7 @@ class RouteController:
         """Removes an attached network and the host routes derived from it.
 
         Host routes are removed only when the network itself goes away, never
-        because a host fell quiet. A neighbour entry ages out when it stops
+        because a host fell quiet. A neighbor entry ages out when it stops
         being used, and tearing its route down on that basis would drop the
         traffic that comes next -- the failure this module exists to prevent.
         A stale MAC is re-resolved by the existing probe path instead.
