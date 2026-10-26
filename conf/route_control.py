@@ -36,49 +36,28 @@ KEY_DESTINATION_PREFIX_LENGTH = "dst_len"
 KEY_ROUTE_TYPE = "type"
 KEY_ROUTE_TABLE = "table"
 KEY_ROUTE_SCOPE = "scope"
-
-# Route types (rtnetlink rtm_type). Only unicast routes describe somewhere to
-# forward to; local and broadcast entries name addresses the host answers for
-# itself, and they have no gateway either, so they have to be told apart from
-# connected routes rather than by the absence of a gateway.
 RTN_UNICAST = 1
-# The kernel's local table, which holds those local and broadcast entries.
 ROUTE_TABLE_LOCAL = 255
-# Scope of a route to an address the host holds itself (RT_SCOPE_HOST). Checked
-# as well as the type, because each signal is only acted on when it is present
-# and a local entry must not be programmed on the strength of a missing field.
-# pyroute2 may render it as the number or the name.
 ROUTE_SCOPE_HOST = (254, "host")
-
-# An on-link network is programmed as one route per neighbor (see
-# RouteController._add_on_link_network), so the number of neighbors it can
-# contribute is bounded. A /24 of hosts that all talk to the UPF would
-# otherwise consume a gate each, and running out of gates fails the same silent
-# way this module exists to fix. Access and core networks carry a handful of
-# peers, so this is generous; it is a guard, not a budget.
 MAX_ON_LINK_NEIGHBORS_PER_NETWORK = 512
-
-# A single IPv4 host, as a prefix length.
 IPV4_HOST_PREFIX_LEN = 32
 
-# Networks attached to a watched interface, and the host addresses already
-# programmed for each: interface -> network -> {host, ...}.
 OnLinkNetworks = dict[str, dict[ipaddress.IPv4Network, set[str]]]
 
 
 @dataclass
 class RouteEntry:
-    """A representation of a neighbor in route entry."""
+    """A representation of a neighbor in route entry.
+
+    on_link marks a route with no gateway, whose network is attached to the
+    interface. next_hop_ip is None on such an entry; the host entries derived
+    from it each carry their own next hop.
+    """
 
     next_hop_ip: str | None = field(default=None)
     interface: str | None = field(default=None)
     dest_prefix: str | None = field(default=None)
     prefix_len: int = field(default=0)
-    # on_link marks a route with no gateway: the destination network is
-    # attached to this interface, so there is no single next hop to send it
-    # to. Every host on it is reached directly, with its own MAC, which the
-    # datapath can only express as one route per host. next_hop_ip is None on
-    # such an entry; the per-host entries derived from it carry a next hop.
     on_link: bool = field(default=False)
 
 
@@ -363,14 +342,12 @@ class RouteController:
                 A cache to keep track of entries add in Bess.
             _module_gate_count_cache (Dict[str, int]):
                 A cache for counting module gate occurrences.
+            _on_link_networks (OnLinkNetworks): Attached networks and the
+                hosts programmed for each.
         """
         self._unresolved_arp_queries_cache: dict[str, RouteEntry] = {}
         self._neighbor_cache: dict[str, NeighborEntry] = {}
         self._module_gate_count_cache: dict[str, int] = defaultdict(lambda: 0)
-        # Networks attached to a watched interface, and the host addresses
-        # already programmed for each: interface -> network -> {host, ...}.
-        # An attached network has no next hop of its own, so it is carried as
-        # one route per host (_add_on_link_network).
         self._on_link_networks: OnLinkNetworks = defaultdict(dict)
 
         self._lock = Lock()
@@ -436,12 +413,10 @@ class RouteController:
     def _add_on_link_network(self, route_entry: RouteEntry) -> None:
         """Registers a network attached to a watched interface.
 
-        The datapath reaches a destination by looking up a prefix and stamping
-        a single MAC onto the packet, so an attached network cannot be one
-        route: every host on it has its own MAC. It is carried as one route per
-        host instead. Hosts already in the kernel's neighbor table are
-        programmed now; later arrivals come in through the neighbor event
-        handler.
+        The datapath stamps one MAC per gate, so an attached network cannot be
+        a single route: every host on it answers with its own MAC. It is
+        carried as one route per host. Hosts already in the neighbor table are
+        programmed here; later arrivals come through the neighbor handler.
 
         Args:
             route_entry (RouteEntry): The attached network.
@@ -471,15 +446,18 @@ class RouteController:
     def _add_on_link_host(self, interface: str, host_ip: str) -> bool:
         """Programs a host route for an address on an attached network.
 
+        A recorded host has been handed to add_new_route_entry, which either
+        programmed it or is waiting on its MAC. Hosts per network are capped,
+        since one host costs one gate.
+
         Args:
             interface (str): The interface the host is attached to.
             host_ip (str): The host's address.
 
         Returns:
-            bool: True if this call took responsibility for the host -- it is
-                on an attached network on this interface and was not already
-                being handled. False means it was not ours, was already
-                recorded, or the network is at its limit.
+            bool: True if this call took responsibility for the host. False
+                if it is on no attached network here, is already recorded, or
+                the network is at its limit.
         """
         if not validate_ipv4(host_ip):
             return False
@@ -488,10 +466,6 @@ class RouteController:
         if network is None:
             return False
 
-        # Membership means the host has been handed to add_new_route_entry,
-        # which either programmed it or is waiting on its MAC. Recording it
-        # before the call keeps a second neighbor event for the same host
-        # from queueing the work twice while the first is still resolving.
         hosts = self._on_link_networks[interface][network]
         if host_ip in hosts:
             return False
@@ -537,9 +511,8 @@ class RouteController:
     def _neighbor_ips_on(self, interface: str) -> list[str]:
         """Lists the addresses the kernel has resolved on an interface.
 
-        The dump covers every family. An IPv6 neighbor is not filtered out
-        here because it cannot match an IPv4 network later: containment across
-        families is False rather than an error.
+        The dump covers every family. An IPv6 neighbor needs no filtering: it
+        cannot match an IPv4 network, which is False rather than an error.
         """
         found: list[str] = []
         try:
@@ -657,6 +630,8 @@ class RouteController:
         """Handle new neighbor event.
 
         It will add the neighbor if it was in the unresolved ARP queries cache.
+        Failing that, a neighbor on a network attached to a watched interface
+        is reached directly and gets a route of its own.
 
         Args:
             netlink_message (dict): The netlink message.
@@ -676,9 +651,6 @@ class RouteController:
                 logger.warning("next_hop_ip is None, cannot delete from cache")
             return
 
-        # Not an address we were waiting on. It may still be a host on a
-        # network attached to one of the watched interfaces, which is reached
-        # directly and so needs a route of its own.
         interface = self._interface_name(netlink_message.get("ifindex"))
         if interface is None:
             return
@@ -789,11 +761,10 @@ class RouteController:
     def _delete_on_link_network(self, route_entry: RouteEntry) -> None:
         """Removes an attached network and the host routes derived from it.
 
-        Host routes are removed only when the network itself goes away, never
-        because a host fell quiet. A neighbor entry ages out when it stops
-        being used, and tearing its route down on that basis would drop the
-        traffic that comes next -- the failure this module exists to prevent.
-        A stale MAC is re-resolved by the existing probe path instead.
+        Only the network going away withdraws a host route, never the host
+        falling quiet: a neighbor entry ages out when unused, and withdrawing
+        on that basis would drop the next traffic to it. A stale MAC is
+        re-resolved by the existing probe path.
 
         Args:
             route_entry (RouteEntry): The attached network being removed.
@@ -930,17 +901,14 @@ class RouteController:
 
     def reconfigure(self, number: int) -> None:
         """Reconfigures the route controller.
-        Clears caches and bootstraps routes.
+        Clears caches and bootstraps routes. Attached networks are cleared
+        too: a reload has recreated the BESS modules, so their host routes
+        have to be programmed again.
         """
         with self._lock:
             self._unresolved_arp_queries_cache.clear()
             self._neighbor_cache.clear()
             self._module_gate_count_cache.clear()
-            # Attached networks are forgotten with the rest: a reload has
-            # recreated the BESS modules, so every host route has to be
-            # programmed again. Remembering them here would make
-            # _add_on_link_network skip them as already known and their hosts
-            # would stay unreachable until the route itself was replaced.
             self._on_link_networks.clear()
         self.bootstrap_routes()
         signal.pause()
@@ -1006,22 +974,18 @@ class RouteController:
     def _is_on_link_candidate(route_entry: dict) -> bool:
         """Reports whether a gateway-less route describes an attached network.
 
-        A route with no gateway is either a connected network or one of the
-        kernel's own local/broadcast entries. The latter would point the
-        datapath at addresses the host answers for itself, and the missing
-        gateway is exactly what stops telling them apart, so three independent
-        signals are used: they live in the local table, they are not unicast,
-        and a local one has host scope. Each is only acted on when the field
-        is present, so no one of them has to be relied on alone.
-
-        A default route with no gateway is not an attached network either.
+        The kernel's own local and broadcast entries have no gateway either,
+        and programming them would point the datapath at addresses the host
+        answers for itself. Three signals tell them apart -- the local table,
+        a non-unicast type, and host scope -- each acted on only when present,
+        so none has to be trusted alone. A gateway-less default route is not
+        an attached network either.
 
         Args:
             route_entry (dict): A netlink route entry message.
 
         Returns:
-            bool: True if the route describes a network attached to an
-                interface.
+            bool: True if the route describes an attached network.
         """
         if route_entry.get(KEY_ROUTE_TABLE) == ROUTE_TABLE_LOCAL:
             return False

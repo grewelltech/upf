@@ -476,14 +476,7 @@ class TestRouteController(unittest.TestCase):
 
 
 class TestOnLinkNetworks(unittest.TestCase):
-    """Routes for networks attached to a watched interface.
-
-    A route with no gateway describes a network this interface is plugged
-    into. The datapath reaches a destination by looking up a prefix and
-    stamping one MAC onto the packet, so such a network cannot be a single
-    route: every host on it answers with its own MAC. These assert it is
-    carried as one route per host instead of being discarded.
-    """
+    """Tests routes for networks attached to a watched interface."""
 
     def setUp(self):
         self.mock_bess_controller = Mock(BessControllerMock)
@@ -522,11 +515,6 @@ class TestOnLinkNetworks(unittest.TestCase):
         self.assertEqual(result.interface, "access")
 
     def test_given_local_table_route_when_parse_message_then_returns_none(self):
-        """The kernel's own local and broadcast entries have no gateway either.
-
-        Programming them would point the datapath at addresses the host
-        answers for itself.
-        """
         for extra in (
             {"table": 255},
             {"type": 2},
@@ -608,7 +596,6 @@ class TestOnLinkNetworks(unittest.TestCase):
     def test_given_no_attached_network_when_host_appears_then_no_route_is_added(
         self, mock_fetch_mac
     ):
-        """A neighbor nobody asked about and on no attached network is ignored."""
         mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
         self.route_controller.add_unresolved_new_neighbor(
             {
@@ -648,7 +635,6 @@ class TestOnLinkNetworks(unittest.TestCase):
     def test_given_attached_network_at_its_limit_when_host_appears_then_it_is_refused(
         self, mock_fetch_mac
     ):
-        """Running out of gates fails the same silent way this code prevents."""
         mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
         self.ndb.neighbours.dump.return_value = [
             {"ifindex": 2, "dst": f"10.122.0.{n}", "lladdr": DEFAULT_MAC_ADDRESS}
@@ -684,11 +670,6 @@ class TestOnLinkNetworks(unittest.TestCase):
     def test_given_host_route_when_the_host_falls_quiet_then_the_route_stays(
         self, mock_fetch_mac
     ):
-        """A neighbor ages out when it stops being used.
-
-        Tearing its route down on that basis would drop the traffic that comes
-        next, which is the failure this code exists to prevent.
-        """
         mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
         self.ndb.neighbours.dump.return_value = [
             {"ifindex": 2, "dst": "10.122.0.21", "lladdr": DEFAULT_MAC_ADDRESS},
@@ -697,8 +678,6 @@ class TestOnLinkNetworks(unittest.TestCase):
         assert entry is not None
         self.route_controller.add_new_route_entry(entry)
 
-        # No neighbor-removal path exists, and none should: only the network
-        # going away takes the host routes with it.
         self.ndb.neighbours.dump.return_value = []
         self.mock_bess_controller.delete_module_route_entry.assert_not_called()
         network = next(iter(self.route_controller._on_link_networks["access"]))
@@ -710,7 +689,6 @@ class TestOnLinkNetworks(unittest.TestCase):
     def test_given_gateway_route_when_added_then_it_is_unchanged_by_on_link_handling(
         self, mock_fetch_mac
     ):
-        """The gateway case is what already worked; it must keep working."""
         mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
         msg = self.connected_route_msg(dst="10.126.0.0")
         msg["attrs"].append(("RTA_GATEWAY", "10.122.0.1"))
@@ -730,12 +708,6 @@ class TestOnLinkNetworks(unittest.TestCase):
     def test_given_attached_network_when_reconfigured_then_host_routes_are_programmed_again(
         self, mock_fetch_mac
     ):
-        """SIGHUP means the pipeline was reloaded and BESS lost its modules.
-
-        up4.bess signals the daemon on every reload, so reconfigure has to
-        reprogram everything. A network remembered across the reset would be
-        skipped as already known and its hosts would never be reinstated.
-        """
         mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
         self.ndb.neighbours.dump.return_value = [
             {"ifindex": 2, "dst": "10.122.0.21", "lladdr": DEFAULT_MAC_ADDRESS},
@@ -760,12 +732,6 @@ class TestOnLinkNetworks(unittest.TestCase):
     def test_given_gateway_on_an_attached_network_when_both_are_added_then_one_gate_is_shared(
         self, mock_fetch_mac
     ):
-        """The router is normally a host on the network it is the gateway for.
-
-        Its host route and the routes that use it as a next hop share one next
-        hop, so they must share one gate and one Update module rather than
-        each taking their own.
-        """
         mock_fetch_mac.return_value = DEFAULT_MAC_ADDRESS
         self.ndb.neighbours.dump.return_value = [
             {"ifindex": 2, "dst": "10.122.0.1", "lladdr": DEFAULT_MAC_ADDRESS},
