@@ -249,11 +249,33 @@ sessionQERLookup:qerFailGate -> farLookup
 sessionQERLookup.set_default_gate(gate=qerFailGate)
 
 # Add logical pipeline when gtpuencap is needed
-farLookup:GTPUEncap \
-    -> gtpuEncap::GtpuEncap(add_psc=parser.gtppsc):1 \
+gtpuEncap::GtpuEncap(add_psc=parser.gtppsc):1 \
     -> outerL4Cksum::L4Checksum() \
     -> outerIPCksum::IPChecksum() \
     -> farMerge
+
+# A downlink packet with DF set that would exceed the N3 MTU once encapsulated
+# is dropped, and its source gets ICMP fragmentation needed through the core
+# routes; DF clear ones are forwarded as they are. Every outcome is its own
+# output gate, so `show module mtuCheck` counts each.
+if parser.mtu_check:
+    # outer IPv4, UDP and GTP-U, and the PDU Session Container if added
+    encap_size = 20 + 8 + 8 + (8 if parser.gtppsc else 0)
+    n3_mtu = parser.n3_mtu
+    if n3_mtu is None:
+        n3_mtu = ports[parser.access_ifname].link_mtu()
+    print(f"mtuCheck: N3 MTU {n3_mtu}, inner packets up to {n3_mtu - encap_size} bytes")
+    farLookup:GTPUEncap \
+        -> mtuCheck::GtpuMtuCheck(mtu=n3_mtu - encap_size, icmp_src=core_ip[0], \
+                                  icmp_rate=parser.mtu_check_icmp_rate, \
+                                  icmp_burst=parser.mtu_check_icmp_burst) \
+        -> gtpuEncap
+    mtuCheck:1 -> ports[parser.core_ifname].rtr
+    mtuCheck:2 -> mtuCheckDfDrop::Sink()
+    mtuCheck:3 -> mtuCheckDfDropNoIcmp::Sink()
+    mtuCheck:4 -> gtpuEncap
+else:
+    farLookup:GTPUEncap -> gtpuEncap
 
 notify = UnixSocketPort(name='notifyCP', path=parser.notify_sockaddr)
 pfcpPort = UnixSocketPort(name='pfcpPort', path=parser.endmarker_sockaddr)

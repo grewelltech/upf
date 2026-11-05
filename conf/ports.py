@@ -285,6 +285,17 @@ class Port:
         # Finall set conf mode
         self.mode = conf_mode
 
+    def link_mtu(self):
+        """The IP MTU of the link the port sends on: the kernel interface's
+        in af_packet and AF_XDP mode, the PMD's in DPDK mode, and 1500 in sim
+        mode, which has no link."""
+        if self.mode == "dpdk":
+            return bess.get_port_config(f"{self.name}Fast").conf.mtu
+        if self.mode == "sim":
+            return 1500
+        with open(f"/sys/class/net/{self.name}/mtu") as f:
+            return int(f.read())
+
     def setup_port(
         self,
         conf_frag_mtu,

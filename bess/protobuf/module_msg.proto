@@ -1187,6 +1187,32 @@ message GtpuEncapArg {
 }
 
 /**
+ * The GtpuMtuCheck module sits before GtpuEncap on the downlink. A downlink
+ * forward whose inner packet is longer than `mtu` would leave N3 larger than
+ * the N3 MTU once encapsulated. With DF set, it is dropped and an ICMP
+ * Destination Unreachable, Fragmentation Needed (type 3, code 4) carrying
+ * `mtu` as the next-hop MTU goes back to its source, at most `icmp_rate` a
+ * second with bursts of `icmp_burst`. With DF clear, it is forwarded.
+ *
+ * __Input Gates__: 1
+ * __Output Gates__: 5 (0 fits, 1 ICMP, 2 DF set and dropped with an ICMP,
+ * 3 DF set and dropped without one, 4 DF clear and forwarded)
+ */
+message GtpuMtuCheckArg {
+  uint32 mtu = 1;         /// N3 MTU less the encap size
+  string icmp_src = 2;    /// IPv4 source of the ICMP (the N6 address)
+  uint32 icmp_rate = 3;   /// ICMPs per second (default = 1000)
+  uint32 icmp_burst = 4;  /// ICMPs before the rate applies (default = 50)
+}
+
+/**
+ * The GtpuMtuCheck module function `set_mtu` replaces `mtu`.
+ */
+message GtpuMtuCheckCommandSetMtuArg {
+  uint32 mtu = 1;  /// largest inner IPv4 packet that fits
+}
+
+/**
  * The Split module is a basic classifier which directs packets out a gate
  * based on data in the packet (e.g., if the read in value is 3, the packet
  * is directed out output gate 3).

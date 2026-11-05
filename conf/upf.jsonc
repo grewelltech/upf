@@ -65,6 +65,15 @@
     // Uncomment line below to enable
     // "ip_frag_with_eth_mtu": "1518",
 
+    // Drop downlink packets with DF set that would exceed the N3 MTU once
+    // encapsulated, and send their source ICMP fragmentation needed
+    "mtu_check": true,
+    // N3 MTU the check uses. Default: the access interface's MTU
+    // "n3_mtu": 1500,
+    // ICMPs per second, and back to back before the rate applies
+    // "mtu_check_icmp_rate": 1000,
+    // "mtu_check_icmp_burst": 50,
+
     // Enable hardware offload of checksum. Might disable vector PMD
     "hwcksum": false,
 

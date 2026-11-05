@@ -37,3 +37,7 @@ These are configurations commonly shared between P4-UPF and BESS-UPF.
 | `access.ifname` | - | Yes | Access-facing network interface name |
 | `core.ifname` | - | Yes | Core-facing network interface name |
 | `enable_notify_bess` | false | No | Whether to enable Notify feature for DDNs |
+| `mtu_check` | true | No | Drop downlink packets with DF set that would exceed the N3 MTU once encapsulated, and send their source ICMP fragmentation needed (`bessctl show module mtuCheck` counts each outcome) |
+| `n3_mtu` | access interface MTU | No | N3 MTU for `mtu_check`; by default the access interface's MTU (af_packet) or the access port's MTU (DPDK) |
+| `mtu_check_icmp_rate` | 1000 | No | ICMPs per second `mtu_check` may send |
+| `mtu_check_icmp_burst` | 50 | No | ICMPs `mtu_check` may send back to back before the rate applies |

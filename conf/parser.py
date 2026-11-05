@@ -34,6 +34,10 @@ class Parser:
         self.ul_rate = 0
         self.max_ip_defrag_flows = None
         self.ip_frag_with_eth_mtu = None
+        self.mtu_check = True
+        self.n3_mtu = None
+        self.mtu_check_icmp_rate = 0
+        self.mtu_check_icmp_burst = 0
         self.hwcksum = False
         self.gtppsc = False
         self.ddp = False
@@ -106,6 +110,31 @@ class Parser:
             )
         except KeyError:
             print("ip_frag_with_eth_mtu value not set. Not installing IP4Frag module.")
+
+        # Check downlink packets against the N3 MTU before encapsulation
+        try:
+            self.mtu_check = bool(self.conf["mtu_check"])
+        except KeyError:
+            print(
+                "mtu_check not set. Default: checking downlink packets against the N3 MTU"
+            )
+
+        try:
+            self.n3_mtu = int(self.conf["n3_mtu"])
+        except ValueError:
+            print("Invalid value for n3_mtu. Using the access interface's MTU.")
+        except KeyError:
+            print("n3_mtu not set. Using the access interface's MTU.")
+
+        try:
+            self.mtu_check_icmp_rate = int(self.conf["mtu_check_icmp_rate"])
+        except (KeyError, ValueError):
+            pass
+
+        try:
+            self.mtu_check_icmp_burst = int(self.conf["mtu_check_icmp_burst"])
+        except (KeyError, ValueError):
+            pass
 
         # Enable PDU Session container
         try:
