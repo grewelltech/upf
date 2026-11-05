@@ -326,6 +326,116 @@ inline void Stamp(Ipv4 *ip, void *l4, const Endpoint &before,
   }
 }
 
+// ICMP destination unreachable, time exceeded and parameter problem carry the
+// header of the packet they are about (rfc792).
+static inline bool IsIcmpError(const Ipv4 *ip, const void *l4) {
+  if (ip->protocol != IpProto::kIcmp) {
+    return false;
+  }
+  uint8_t type = static_cast<const Icmp *>(l4)->type;
+  return type == 3 || type == 11 || type == 12;
+}
+
+template <NAT::Direction dir>
+bool NAT::TranslateIcmpError(bess::Packet *pkt) {
+  Ethernet *eth = pkt->head_data<Ethernet *>();
+  Ipv4 *ip = reinterpret_cast<Ipv4 *>(eth + 1);
+  size_t ip_bytes = (ip->header_length) << 2;
+  size_t ip_len = ip->length.value();
+
+  // The whole ICMP message must be in the first segment, since its checksum
+  // covers all of it, and must hold the quoted IP header and the 8 bytes after
+  // it, where the ports or the ICMP identifier are.
+  if (ip_bytes < sizeof(Ipv4) || ip_len < ip_bytes + sizeof(Icmp) ||
+      sizeof(Ethernet) + ip_len > static_cast<size_t>(pkt->head_len())) {
+    return false;
+  }
+  Icmp *icmp =
+      reinterpret_cast<Icmp *>(reinterpret_cast<uint8_t *>(ip) + ip_bytes);
+  size_t icmp_len = ip_len - ip_bytes;
+
+  Ipv4 *inner = reinterpret_cast<Ipv4 *>(icmp + 1);
+  size_t quote_len = icmp_len - sizeof(Icmp);
+  if (quote_len < sizeof(Ipv4)) {
+    return false;
+  }
+  size_t inner_bytes = (inner->header_length) << 2;
+  if (inner_bytes < sizeof(Ipv4) || quote_len < inner_bytes + 8) {
+    return false;
+  }
+  uint8_t *inner_l4 = reinterpret_cast<uint8_t *>(inner) + inner_bytes;
+  size_t inner_l4_len = quote_len - inner_bytes;
+  IpProto proto = static_cast<IpProto>(inner->protocol);
+
+  // The quoted packet went the other way: an error leaving is about a packet
+  // that came in to the internal endpoint, its destination; an error coming in
+  // is about a packet that left from the external endpoint, its source.
+  Endpoint before;
+  be16_t *port;
+  if (proto == IpProto::kTcp || proto == IpProto::kUdp) {
+    Udp *udp = reinterpret_cast<Udp *>(inner_l4);
+    port = dir == kForward ? &udp->dst_port : &udp->src_port;
+  } else if (proto == IpProto::kIcmp) {
+    port = &reinterpret_cast<Icmp *>(inner_l4)->ident;
+  } else {
+    return false;
+  }
+  before = {.addr = dir == kForward ? inner->dst : inner->src,
+            .port = *port,
+            .protocol = proto};
+
+  // No refresh: only outbound packets refresh a mapping (rfc4787 REQ-6).
+  auto *hash_item = map_.Find(before);
+  if (hash_item == nullptr) {
+    return false;
+  }
+  const Endpoint &after = hash_item->second.endpoint;
+
+  if (dir == kForward) {
+    inner->dst = after.addr;
+    ip->src = after.addr;
+  } else {
+    inner->src = after.addr;
+    ip->dst = after.addr;
+  }
+  *port = after.port;
+
+  uint32_t l3_increment =
+      ChecksumIncrement32(before.addr.raw_value(), after.addr.raw_value());
+  uint32_t l4_increment =
+      l3_increment +
+      ChecksumIncrement16(before.port.raw_value(), after.port.raw_value());
+  inner->checksum = UpdateChecksumWithIncrement(inner->checksum, l3_increment);
+
+  // The quoted transport checksum is updated when the quote reaches it.
+  if (proto == IpProto::kTcp) {
+    // the TCP checksum is bytes 16 and 17 of its header
+    if (inner_l4_len >= 18) {
+      Tcp *tcp = reinterpret_cast<Tcp *>(inner_l4);
+      tcp->checksum = UpdateChecksumWithIncrement(tcp->checksum, l4_increment);
+    }
+  } else if (proto == IpProto::kUdp) {
+    Udp *udp = reinterpret_cast<Udp *>(inner_l4);
+    if (udp->checksum != 0) {
+      udp->checksum =
+          UpdateChecksumWithIncrement(udp->checksum, l4_increment) ?: 0xffff;
+    }
+  } else {
+    Icmp *inner_icmp = reinterpret_cast<Icmp *>(inner_l4);
+    inner_icmp->checksum = UpdateChecksum16(
+        inner_icmp->checksum, before.port.raw_value(), after.port.raw_value());
+  }
+
+  // Several words of the quote changed, and the ICMP checksum covers them all,
+  // so it is computed again rather than updated. So is the outer header's: a
+  // router's error leaving has its own source, not the quoted destination.
+  icmp->checksum = 0;
+  icmp->checksum = bess::utils::CalculateGenericChecksum(icmp, icmp_len);
+  ip->checksum = bess::utils::CalculateIpv4Checksum(*ip);
+
+  return true;
+}
+
 template <NAT::Direction dir>
 inline void NAT::DoProcessBatch(Context *ctx, bess::PacketBatch *batch) {
   gate_idx_t ogate_idx = dir == kForward ? 1 : 0;
@@ -339,6 +449,15 @@ inline void NAT::DoProcessBatch(Context *ctx, bess::PacketBatch *batch) {
     Ipv4 *ip = reinterpret_cast<Ipv4 *>(eth + 1);
     size_t ip_bytes = (ip->header_length) << 2;
     void *l4 = reinterpret_cast<uint8_t *>(ip) + ip_bytes;
+
+    if (IsIcmpError(ip, l4)) {
+      if (TranslateIcmpError<dir>(pkt)) {
+        EmitPacket(ctx, pkt, ogate_idx);
+      } else {
+        DropPacket(ctx, pkt);
+      }
+      continue;
+    }
 
     bool valid_protocol;
     Endpoint before;
