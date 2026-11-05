@@ -171,6 +171,11 @@ class NAT final : public Module {
   template <Direction dir>
   void DoProcessBatch(Context *ctx, bess::PacketBatch *batch);
 
+  // Translates an ICMP error about a translated packet (rfc5508 REQ-3);
+  // returns false if it is about no packet in the table.
+  template <Direction dir>
+  bool TranslateIcmpError(bess::Packet *pkt);
+
   std::vector<be32_t> ext_addrs_;
 
   // Port ranges available for each address. The first index is the same as the

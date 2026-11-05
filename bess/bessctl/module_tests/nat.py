@@ -108,6 +108,78 @@ class BessNatTest(BessModuleTestCase):
         nat = NAT(ext_addrs=nat_config)
         self._test_l4(nat, scapy.ICMP(), "192.168.1.1")
 
+    def _test_icmp_error(self, l4_orig, reply):
+        # An ICMP error is about a packet that went the other way, and quotes
+        # it (rfc5508 REQ-3): the NAT translates the quote and the outer
+        # address with the mapping that packet used.
+        nat = NAT(ext_addrs=[{"ext_addr": "192.168.1.1"}])
+        eth = scapy.Ether(src="02:1e:67:9f:4d:ae", dst="06:16:3e:1b:72:32")
+        l7 = "helloworld"
+
+        orig = eth / scapy.IP(src="172.16.0.2", dst="8.8.8.8") / l4_orig / l7
+        natted = self.run_module(nat, 0, [orig], [0, 1])[1][0]
+        l4_natted = natted[scapy.IP].payload.copy()
+        l4_natted.remove_payload()
+        del l4_natted.chksum
+
+        def error(src, dst, quoted):
+            # fragmentation needed, as a router on the path sends it
+            return (
+                eth
+                / scapy.IP(src=src, dst=dst)
+                / scapy.ICMP(type=3, code=4, nexthopmtu=1400)
+                / bytes(quoted[scapy.IP])
+            )
+
+        # Coming in: about the packet the NAT sent out.
+        quoted_out = scapy.IP(src="192.168.1.1", dst="8.8.8.8") / l4_natted / l7
+        quoted_in = scapy.IP(src="172.16.0.2", dst="8.8.8.8") / l4_orig / l7
+        outs = self.run_module(
+            nat, 1, [error("10.9.9.9", "192.168.1.1", quoted_out)], [0, 1]
+        )
+        self.assertEqual(len(outs[0]), 1, "the inbound error was dropped")
+        self.assertSamePackets(error("10.9.9.9", "172.16.0.2", quoted_in), outs[0][0])
+
+        # Going out: about a reply the NAT let in, sent by a router inside
+        # (the UPF's own fragmentation needed is one).
+        reply_in = scapy.IP(src="8.8.8.8", dst="172.16.0.2") / reply(l4_orig.copy()) / l7
+        reply_out = (
+            scapy.IP(src="8.8.8.8", dst="192.168.1.1") / reply(l4_natted.copy()) / l7
+        )
+        outs = self.run_module(
+            nat, 0, [error("192.168.250.3", "8.8.8.8", reply_in)], [0, 1]
+        )
+        self.assertEqual(len(outs[1]), 1, "the outbound error was dropped")
+        self.assertSamePackets(error("192.168.1.1", "8.8.8.8", reply_out), outs[1][0])
+
+        # About a packet the NAT has no mapping for: dropped.
+        stray = scapy.IP(src="8.8.8.8", dst="172.16.0.99") / l4_orig / l7
+        outs = self.run_module(
+            nat, 0, [error("192.168.250.3", "8.8.8.8", stray)], [0, 1]
+        )
+        self.assertEqual(len(outs[0]) + len(outs[1]), 0)
+
+    @staticmethod
+    def _swap_ports(l4):
+        l4.sport, l4.dport = l4.dport, l4.sport
+        del l4.chksum
+        return l4
+
+    @staticmethod
+    def _echo_reply(l4):
+        l4.type = 0
+        del l4.chksum
+        return l4
+
+    def test_nat_icmp_error_udp(self):
+        self._test_icmp_error(scapy.UDP(sport=56797, dport=53), self._swap_ports)
+
+    def test_nat_icmp_error_tcp(self):
+        self._test_icmp_error(scapy.TCP(sport=52428, dport=80), self._swap_ports)
+
+    def test_nat_icmp_error_icmp(self):
+        self._test_icmp_error(scapy.ICMP(id=77), self._echo_reply)
+
     def test_nat_selfconfig(self):
         # Send initial conf unsorted, see that it comes back sorted
         # (note that this is a bit different from other modules
