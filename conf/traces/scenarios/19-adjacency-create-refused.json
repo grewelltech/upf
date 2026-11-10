@@ -1,0 +1,306 @@
+{
+  "name": "adjacency-create-refused",
+  "description": "bessd refuses to create an adjacency module (ENOMEM here): no prefix may be left pointing at a gate with nothing behind it, and the next event through that gateway must try again",
+  "interfaces": [
+    "access",
+    "core"
+  ],
+  "kernel": {
+    "links": {
+      "1": "lo",
+      "2": "access",
+      "3": "core"
+    },
+    "neighbors": [
+      {
+        "dst": "10.1.0.1",
+        "lladdr": "aa:bb:cc:00:00:01",
+        "ifindex": 2
+      },
+      {
+        "dst": "10.2.0.1",
+        "lladdr": "aa:bb:cc:00:00:02",
+        "ifindex": 3
+      }
+    ],
+    "routes": [
+      {
+        "dst": "10.1.0.0/24",
+        "oif": 2
+      },
+      {
+        "dst": "10.1.0.2/32",
+        "oif": 2,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.1.0.255/32",
+        "oif": 2,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "10.2.0.0/24",
+        "oif": 3
+      },
+      {
+        "dst": "10.2.0.2/32",
+        "oif": 3,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.2.0.255/32",
+        "oif": 3,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "10.100.0.0/16",
+        "gw": "10.1.0.1",
+        "oif": 2
+      },
+      {
+        "dst": "0.0.0.0/0",
+        "gw": "10.2.0.1",
+        "oif": 3
+      }
+    ]
+  },
+  "steps": [
+    {
+      "bess_error": {
+        "op": "create_module",
+        "code": "ENOMEM",
+        "match": {
+          "name": "coreDstMACAABBCC000002"
+        }
+      }
+    },
+    {
+      "start": true
+    },
+    {
+      "expect": [
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.1.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "accessDstMACAABBCC000001",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:01"
+          }
+        ],
+        [
+          "connect",
+          "accessRoutes",
+          0,
+          "accessDstMACAABBCC000001",
+          0
+        ],
+        [
+          "connect",
+          "accessDstMACAABBCC000001",
+          0,
+          "accessMerge",
+          0
+        ],
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.100.0.0",
+            "prefix_len": 16,
+            "gate": 0
+          }
+        ]
+      ],
+      "allow": [
+        [
+          "module_command",
+          "coreRoutes",
+          "*",
+          "*"
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "*",
+          "*"
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "*",
+          "*"
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "*",
+          "*"
+        ],
+        [
+          "probe",
+          "10.2.0.1"
+        ]
+      ],
+      "note": "The refused create is not effective. A prefix added and then withdrawn is allowed; one left behind is not (see the state)."
+    },
+    {
+      "expect_state": {
+        "forwarding": {
+          "coreRoutes": {
+            "0.0.0.0/0": "drop"
+          }
+        }
+      },
+      "expect_state_python": {
+        "forwarding": {
+          "coreRoutes": {
+            "0.0.0.0/0": "unwired",
+            "10.2.0.1/32": "unwired"
+          }
+        }
+      },
+      "because": "create_module raises at once on any error but EEXIST (route_control.py:218-224), _create_update_module swallows it (:750) and _create_module_links then fails with ENOENT, but the neighbor cache entry is still written (:716-721): the host route and the default route point at an unwired gate, every later prefix through the gateway shares it, and nothing repairs it short of SIGHUP."
+    },
+    {
+      "route_add": {
+        "dst": "172.16.0.0/16",
+        "gw": "10.2.0.1",
+        "oif": 3
+      }
+    },
+    {
+      "expect": [
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "10.2.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "coreDstMACAABBCC000002",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:02"
+          }
+        ],
+        [
+          "connect",
+          "coreRoutes",
+          0,
+          "coreDstMACAABBCC000002",
+          0
+        ],
+        [
+          "connect",
+          "coreDstMACAABBCC000002",
+          0,
+          "coreMerge",
+          0
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "0.0.0.0",
+            "prefix_len": 0,
+            "gate": 0
+          }
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "172.16.0.0",
+            "prefix_len": 16,
+            "gate": 0
+          }
+        ]
+      ],
+      "allow": [
+        [
+          "module_command",
+          "coreRoutes",
+          "*",
+          "*"
+        ]
+      ],
+      "note": "The next event through the gateway succeeds: adjacency, its host route and both prefixes.",
+      "expect_python": [
+        [
+          "pause"
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "172.16.0.0",
+            "prefix_len": 16,
+            "gate": 0
+          }
+        ],
+        [
+          "resume"
+        ]
+      ],
+      "because": "create_module raises at once on any error but EEXIST (route_control.py:218-224), _create_update_module swallows it (:750) and _create_module_links then fails with ENOENT, but the neighbor cache entry is still written (:716-721): the host route and the default route point at an unwired gate, every later prefix through the gateway shares it, and nothing repairs it short of SIGHUP."
+    },
+    {
+      "expect_state": {
+        "forwarding": {
+          "coreRoutes": {
+            "0.0.0.0/0": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "10.2.0.1/32": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "172.16.0.0/16": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            }
+          }
+        }
+      },
+      "expect_state_python": {
+        "forwarding": {
+          "coreRoutes": {
+            "0.0.0.0/0": "unwired",
+            "10.2.0.1/32": "unwired",
+            "172.16.0.0/16": "unwired"
+          }
+        }
+      },
+      "because": "create_module raises at once on any error but EEXIST (route_control.py:218-224), _create_update_module swallows it (:750) and _create_module_links then fails with ENOENT, but the neighbor cache entry is still written (:716-721): the host route and the default route point at an unwired gate, every later prefix through the gateway shares it, and nothing repairs it short of SIGHUP."
+    }
+  ],
+  "python_differs": true
+}

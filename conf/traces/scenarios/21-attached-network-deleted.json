@@ -1,0 +1,310 @@
+{
+  "name": "attached-network-deleted",
+  "description": "The access interface's connected route is withdrawn (link down): its host routes go and so do their adjacencies",
+  "interfaces": [
+    "access",
+    "core"
+  ],
+  "kernel": {
+    "links": {
+      "1": "lo",
+      "2": "access",
+      "3": "core"
+    },
+    "neighbors": [
+      {
+        "dst": "10.1.0.1",
+        "lladdr": "aa:bb:cc:00:00:01",
+        "ifindex": 2
+      },
+      {
+        "dst": "10.2.0.1",
+        "lladdr": "aa:bb:cc:00:00:02",
+        "ifindex": 3
+      }
+    ],
+    "routes": [
+      {
+        "dst": "10.1.0.0/24",
+        "oif": 2
+      },
+      {
+        "dst": "10.1.0.2/32",
+        "oif": 2,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.1.0.255/32",
+        "oif": 2,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "10.2.0.0/24",
+        "oif": 3
+      },
+      {
+        "dst": "10.2.0.2/32",
+        "oif": 3,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.2.0.255/32",
+        "oif": 3,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "0.0.0.0/0",
+        "gw": "10.2.0.1",
+        "oif": 3
+      }
+    ]
+  },
+  "steps": [
+    {
+      "start": true
+    },
+    {
+      "expect": [
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.1.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "accessDstMACAABBCC000001",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:01"
+          }
+        ],
+        [
+          "connect",
+          "accessRoutes",
+          0,
+          "accessDstMACAABBCC000001",
+          0
+        ],
+        [
+          "connect",
+          "accessDstMACAABBCC000001",
+          0,
+          "accessMerge",
+          0
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "10.2.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "coreDstMACAABBCC000002",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:02"
+          }
+        ],
+        [
+          "connect",
+          "coreRoutes",
+          0,
+          "coreDstMACAABBCC000002",
+          0
+        ],
+        [
+          "connect",
+          "coreDstMACAABBCC000002",
+          0,
+          "coreMerge",
+          0
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "0.0.0.0",
+            "prefix_len": 0,
+            "gate": 0
+          }
+        ]
+      ]
+    },
+    {
+      "route_del": {
+        "dst": "10.1.0.0/24",
+        "oif": 2
+      }
+    },
+    {
+      "expect": [
+        [
+          "module_command",
+          "accessRoutes",
+          "delete",
+          {
+            "prefix": "10.1.0.1",
+            "prefix_len": 32
+          }
+        ],
+        [
+          "destroy_module",
+          "accessDstMACAABBCC000001"
+        ]
+      ],
+      "ordered": true,
+      "expect_python": [
+        [
+          "pause"
+        ],
+        [
+          "module_command",
+          "accessRoutes",
+          "delete",
+          {
+            "prefix": "10.1.0.1",
+            "prefix_len": 32
+          }
+        ],
+        [
+          "resume"
+        ],
+        [
+          "pause"
+        ],
+        [
+          "destroy_module",
+          "accessRoutesDstMACAABBCC000001"
+        ],
+        [
+          "error",
+          "ENOENT"
+        ],
+        [
+          "sleep",
+          2
+        ],
+        [
+          "resume"
+        ],
+        [
+          "pause"
+        ],
+        [
+          "destroy_module",
+          "accessRoutesDstMACAABBCC000001"
+        ],
+        [
+          "error",
+          "ENOENT"
+        ],
+        [
+          "sleep",
+          2
+        ],
+        [
+          "resume"
+        ],
+        [
+          "pause"
+        ],
+        [
+          "destroy_module",
+          "accessRoutesDstMACAABBCC000001"
+        ],
+        [
+          "error",
+          "ENOENT"
+        ],
+        [
+          "sleep",
+          2
+        ],
+        [
+          "resume"
+        ],
+        [
+          "pause"
+        ],
+        [
+          "destroy_module",
+          "accessRoutesDstMACAABBCC000001"
+        ],
+        [
+          "error",
+          "ENOENT"
+        ],
+        [
+          "sleep",
+          2
+        ],
+        [
+          "resume"
+        ],
+        [
+          "pause"
+        ],
+        [
+          "destroy_module",
+          "accessRoutesDstMACAABBCC000001"
+        ],
+        [
+          "error",
+          "ENOENT"
+        ],
+        [
+          "sleep",
+          2
+        ],
+        [
+          "resume"
+        ]
+      ],
+      "because": "route_control.py destroys the adjacency under the name <if>RoutesDstMAC<mac> (get_update_module_name called with the Routes module name, :898-903) although it was created as <if>DstMAC<mac> (:701); bessd answers ENOENT five times and the module leaks. With MAX_ON_LINK_NEIGHBORS_PER_NETWORK hosts that is ten seconds of paused workers per host."
+    },
+    {
+      "expect_state": {
+        "absent": [
+          "accessDstMACAABBCC000001"
+        ],
+        "forwarding": {
+          "accessRoutes": {
+            "0.0.0.0/0": "drop"
+          }
+        }
+      },
+      "expect_state_python": {
+        "modules": {
+          "accessDstMACAABBCC000001": {
+            "mclass": "Update",
+            "arg": {
+              "dst_mac": "aa:bb:cc:00:00:01"
+            }
+          }
+        },
+        "absent": []
+      },
+      "because": "route_control.py destroys the adjacency under the name <if>RoutesDstMAC<mac> (get_update_module_name called with the Routes module name, :898-903) although it was created as <if>DstMAC<mac> (:701); bessd answers ENOENT five times and the module leaks. With MAX_ON_LINK_NEIGHBORS_PER_NETWORK hosts that is ten seconds of paused workers per host."
+    }
+  ],
+  "python_differs": true
+}

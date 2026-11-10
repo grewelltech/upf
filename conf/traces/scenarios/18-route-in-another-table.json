@@ -1,0 +1,353 @@
+{
+  "name": "route-in-another-table",
+  "description": "A default route added in another routing table (policy routing, or a backup with a metric) must not touch the main table's forwarding, and deleting it must not either",
+  "interfaces": [
+    "access",
+    "core"
+  ],
+  "kernel": {
+    "links": {
+      "1": "lo",
+      "2": "access",
+      "3": "core"
+    },
+    "neighbors": [
+      {
+        "dst": "10.1.0.1",
+        "lladdr": "aa:bb:cc:00:00:01",
+        "ifindex": 2
+      },
+      {
+        "dst": "10.2.0.1",
+        "lladdr": "aa:bb:cc:00:00:02",
+        "ifindex": 3
+      },
+      {
+        "dst": "10.2.0.9",
+        "lladdr": "aa:bb:cc:00:00:09",
+        "ifindex": 3
+      }
+    ],
+    "routes": [
+      {
+        "dst": "10.1.0.0/24",
+        "oif": 2
+      },
+      {
+        "dst": "10.1.0.2/32",
+        "oif": 2,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.1.0.255/32",
+        "oif": 2,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "10.2.0.0/24",
+        "oif": 3
+      },
+      {
+        "dst": "10.2.0.2/32",
+        "oif": 3,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.2.0.255/32",
+        "oif": 3,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "10.100.0.0/16",
+        "gw": "10.1.0.1",
+        "oif": 2
+      },
+      {
+        "dst": "0.0.0.0/0",
+        "gw": "10.2.0.1",
+        "oif": 3
+      }
+    ]
+  },
+  "steps": [
+    {
+      "start": true
+    },
+    {
+      "expect": [
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.1.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "accessDstMACAABBCC000001",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:01"
+          }
+        ],
+        [
+          "connect",
+          "accessRoutes",
+          0,
+          "accessDstMACAABBCC000001",
+          0
+        ],
+        [
+          "connect",
+          "accessDstMACAABBCC000001",
+          0,
+          "accessMerge",
+          0
+        ],
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.100.0.0",
+            "prefix_len": 16,
+            "gate": 0
+          }
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "10.2.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "coreDstMACAABBCC000002",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:02"
+          }
+        ],
+        [
+          "connect",
+          "coreRoutes",
+          0,
+          "coreDstMACAABBCC000002",
+          0
+        ],
+        [
+          "connect",
+          "coreDstMACAABBCC000002",
+          0,
+          "coreMerge",
+          0
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "10.2.0.9",
+            "prefix_len": 32,
+            "gate": 1
+          }
+        ],
+        [
+          "create_module",
+          "coreDstMACAABBCC000009",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:09"
+          }
+        ],
+        [
+          "connect",
+          "coreRoutes",
+          1,
+          "coreDstMACAABBCC000009",
+          0
+        ],
+        [
+          "connect",
+          "coreDstMACAABBCC000009",
+          0,
+          "coreMerge",
+          0
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "0.0.0.0",
+            "prefix_len": 0,
+            "gate": 0
+          }
+        ]
+      ]
+    },
+    {
+      "route_add": {
+        "dst": "0.0.0.0/0",
+        "gw": "10.2.0.9",
+        "oif": 3,
+        "table": 100
+      }
+    },
+    {
+      "expect": [],
+      "expect_python": [
+        [
+          "pause"
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "delete",
+          {
+            "prefix": "0.0.0.0",
+            "prefix_len": 0
+          }
+        ],
+        [
+          "resume"
+        ],
+        [
+          "pause"
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "0.0.0.0",
+            "prefix_len": 0,
+            "gate": 1
+          }
+        ],
+        [
+          "resume"
+        ]
+      ],
+      "because": "_parse_route_entry_msg (route_control.py:1134-1189) looks at the table only for gateway-less routes and route_key (:1216) has no table, so the table-100 default is taken as a move of the main table's default: it is re-pointed at 10.2.0.9, and deleting the table-100 route deletes the main default from BESS."
+    },
+    {
+      "expect_state": {
+        "forwarding": {
+          "coreRoutes": {
+            "0.0.0.0/0": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "10.2.0.1/32": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "10.2.0.9/32": {
+              "dst_mac": "aa:bb:cc:00:00:09",
+              "to": "coreMerge"
+            }
+          }
+        }
+      },
+      "expect_state_python": {
+        "forwarding": {
+          "coreRoutes": {
+            "0.0.0.0/0": {
+              "dst_mac": "aa:bb:cc:00:00:09",
+              "to": "coreMerge"
+            },
+            "10.2.0.1/32": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "10.2.0.9/32": {
+              "dst_mac": "aa:bb:cc:00:00:09",
+              "to": "coreMerge"
+            }
+          }
+        }
+      },
+      "because": "_parse_route_entry_msg (route_control.py:1134-1189) looks at the table only for gateway-less routes and route_key (:1216) has no table, so the table-100 default is taken as a move of the main table's default: it is re-pointed at 10.2.0.9, and deleting the table-100 route deletes the main default from BESS."
+    },
+    {
+      "route_del": {
+        "dst": "0.0.0.0/0",
+        "table": 100
+      }
+    },
+    {
+      "expect": [],
+      "expect_python": [
+        [
+          "pause"
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "delete",
+          {
+            "prefix": "0.0.0.0",
+            "prefix_len": 0
+          }
+        ],
+        [
+          "resume"
+        ]
+      ],
+      "because": "_parse_route_entry_msg (route_control.py:1134-1189) looks at the table only for gateway-less routes and route_key (:1216) has no table, so the table-100 default is taken as a move of the main table's default: it is re-pointed at 10.2.0.9, and deleting the table-100 route deletes the main default from BESS."
+    },
+    {
+      "expect_state": {
+        "forwarding": {
+          "coreRoutes": {
+            "0.0.0.0/0": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "10.2.0.1/32": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "10.2.0.9/32": {
+              "dst_mac": "aa:bb:cc:00:00:09",
+              "to": "coreMerge"
+            }
+          }
+        }
+      },
+      "expect_state_python": {
+        "forwarding": {
+          "coreRoutes": {
+            "0.0.0.0/0": "drop",
+            "10.2.0.1/32": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "10.2.0.9/32": {
+              "dst_mac": "aa:bb:cc:00:00:09",
+              "to": "coreMerge"
+            }
+          }
+        }
+      },
+      "because": "_parse_route_entry_msg (route_control.py:1134-1189) looks at the table only for gateway-less routes and route_key (:1216) has no table, so the table-100 default is taken as a move of the main table's default: it is re-pointed at 10.2.0.9, and deleting the table-100 route deletes the main default from BESS."
+    }
+  ],
+  "python_differs": true
+}

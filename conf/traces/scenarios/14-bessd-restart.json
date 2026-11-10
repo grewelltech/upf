@@ -1,0 +1,349 @@
+{
+  "name": "bessd-restart",
+  "description": "bessd restarts (crash or liveness probe) and is back with the base pipeline before the controller hears of it: the controller must reconnect and program everything again. Assumes no SIGHUP reaches the controller (the pod has no shared PID namespace, or the pipeline came back without one) and that pybess sees the loss as its broken channel",
+  "interfaces": [
+    "access",
+    "core"
+  ],
+  "kernel": {
+    "links": {
+      "1": "lo",
+      "2": "access",
+      "3": "core"
+    },
+    "neighbors": [
+      {
+        "dst": "10.1.0.1",
+        "lladdr": "aa:bb:cc:00:00:01",
+        "ifindex": 2
+      },
+      {
+        "dst": "10.2.0.1",
+        "lladdr": "aa:bb:cc:00:00:02",
+        "ifindex": 3
+      }
+    ],
+    "routes": [
+      {
+        "dst": "10.1.0.0/24",
+        "oif": 2
+      },
+      {
+        "dst": "10.1.0.2/32",
+        "oif": 2,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.1.0.255/32",
+        "oif": 2,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "10.2.0.0/24",
+        "oif": 3
+      },
+      {
+        "dst": "10.2.0.2/32",
+        "oif": 3,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.2.0.255/32",
+        "oif": 3,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "10.100.0.0/16",
+        "gw": "10.1.0.1",
+        "oif": 2
+      },
+      {
+        "dst": "0.0.0.0/0",
+        "gw": "10.2.0.1",
+        "oif": 3
+      }
+    ]
+  },
+  "steps": [
+    {
+      "start": true
+    },
+    {
+      "expect": [
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.1.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "accessDstMACAABBCC000001",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:01"
+          }
+        ],
+        [
+          "connect",
+          "accessRoutes",
+          0,
+          "accessDstMACAABBCC000001",
+          0
+        ],
+        [
+          "connect",
+          "accessDstMACAABBCC000001",
+          0,
+          "accessMerge",
+          0
+        ],
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.100.0.0",
+            "prefix_len": 16,
+            "gate": 0
+          }
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "10.2.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "coreDstMACAABBCC000002",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:02"
+          }
+        ],
+        [
+          "connect",
+          "coreRoutes",
+          0,
+          "coreDstMACAABBCC000002",
+          0
+        ],
+        [
+          "connect",
+          "coreDstMACAABBCC000002",
+          0,
+          "coreMerge",
+          0
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "0.0.0.0",
+            "prefix_len": 0,
+            "gate": 0
+          }
+        ]
+      ]
+    },
+    {
+      "bess_restart": true
+    },
+    {
+      "route_add": {
+        "dst": "172.16.0.0/16",
+        "gw": "10.2.0.1",
+        "oif": 3
+      }
+    },
+    {
+      "expect": [
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.1.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "accessDstMACAABBCC000001",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:01"
+          }
+        ],
+        [
+          "connect",
+          "accessRoutes",
+          0,
+          "accessDstMACAABBCC000001",
+          0
+        ],
+        [
+          "connect",
+          "accessDstMACAABBCC000001",
+          0,
+          "accessMerge",
+          0
+        ],
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.100.0.0",
+            "prefix_len": 16,
+            "gate": 0
+          }
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "10.2.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "coreDstMACAABBCC000002",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:02"
+          }
+        ],
+        [
+          "connect",
+          "coreRoutes",
+          0,
+          "coreDstMACAABBCC000002",
+          0
+        ],
+        [
+          "connect",
+          "coreDstMACAABBCC000002",
+          0,
+          "coreMerge",
+          0
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "0.0.0.0",
+            "prefix_len": 0,
+            "gate": 0
+          }
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "172.16.0.0",
+            "prefix_len": 16,
+            "gate": 0
+          }
+        ]
+      ],
+      "allow": [
+        [
+          "reconnect"
+        ],
+        [
+          "reconnect"
+        ]
+      ],
+      "note": "pybess needs two connect() calls after a broken channel, or a disconnect() first; both are allowed.",
+      "expect_python": [
+        [
+          "pause"
+        ],
+        [
+          "error",
+          "RPCError"
+        ],
+        [
+          "sleep",
+          2
+        ],
+        [
+          "resume"
+        ],
+        [
+          "error",
+          "RPCError"
+        ]
+      ],
+      "because": "BessController._get_bess (route_control.py:93-114) connects once; pybess marks the channel broken on the first disconnect and every later call raises RPCError, which the retry loops catch and give up on, so nothing is ever programmed again until the container restarts. Measured on rel-2.6.3 images (OnRamp, 2026-10-12); the exception sequence here is from pybess's code, not from a live daemon."
+    },
+    {
+      "expect_state": {
+        "forwarding": {
+          "accessRoutes": {
+            "0.0.0.0/0": "drop",
+            "10.1.0.1/32": {
+              "dst_mac": "aa:bb:cc:00:00:01",
+              "to": "accessMerge"
+            },
+            "10.100.0.0/16": {
+              "dst_mac": "aa:bb:cc:00:00:01",
+              "to": "accessMerge"
+            }
+          },
+          "coreRoutes": {
+            "0.0.0.0/0": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "10.2.0.1/32": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "172.16.0.0/16": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            }
+          }
+        }
+      },
+      "expect_state_python": {
+        "forwarding": {
+          "accessRoutes": {
+            "0.0.0.0/0": "drop"
+          },
+          "coreRoutes": {
+            "0.0.0.0/0": "drop"
+          }
+        }
+      },
+      "because": "BessController._get_bess (route_control.py:93-114) connects once; pybess marks the channel broken on the first disconnect and every later call raises RPCError, which the retry loops catch and give up on, so nothing is ever programmed again until the container restarts. Measured on rel-2.6.3 images (OnRamp, 2026-10-12); the exception sequence here is from pybess's code, not from a live daemon."
+    }
+  ],
+  "python_differs": true
+}
