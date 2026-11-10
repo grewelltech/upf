@@ -1,0 +1,215 @@
+{
+  "name": "duplicate-add-is-a-no-op",
+  "description": "A route event for a route already programmed changes nothing",
+  "interfaces": [
+    "access",
+    "core"
+  ],
+  "kernel": {
+    "links": {
+      "1": "lo",
+      "2": "access",
+      "3": "core"
+    },
+    "neighbors": [
+      {
+        "dst": "10.1.0.1",
+        "lladdr": "aa:bb:cc:00:00:01",
+        "ifindex": 2
+      },
+      {
+        "dst": "10.2.0.1",
+        "lladdr": "aa:bb:cc:00:00:02",
+        "ifindex": 3
+      }
+    ],
+    "routes": [
+      {
+        "dst": "10.1.0.0/24",
+        "oif": 2
+      },
+      {
+        "dst": "10.1.0.2/32",
+        "oif": 2,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.1.0.255/32",
+        "oif": 2,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "10.2.0.0/24",
+        "oif": 3
+      },
+      {
+        "dst": "10.2.0.2/32",
+        "oif": 3,
+        "table": 255,
+        "type": 2,
+        "scope": 254
+      },
+      {
+        "dst": "10.2.0.255/32",
+        "oif": 3,
+        "table": 255,
+        "type": 3,
+        "scope": 253
+      },
+      {
+        "dst": "10.100.0.0/16",
+        "gw": "10.1.0.1",
+        "oif": 2
+      },
+      {
+        "dst": "0.0.0.0/0",
+        "gw": "10.2.0.1",
+        "oif": 3
+      }
+    ]
+  },
+  "steps": [
+    {
+      "start": true
+    },
+    {
+      "expect": [
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.1.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "accessDstMACAABBCC000001",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:01"
+          }
+        ],
+        [
+          "connect",
+          "accessRoutes",
+          0,
+          "accessDstMACAABBCC000001",
+          0
+        ],
+        [
+          "connect",
+          "accessDstMACAABBCC000001",
+          0,
+          "accessMerge",
+          0
+        ],
+        [
+          "module_command",
+          "accessRoutes",
+          "add",
+          {
+            "prefix": "10.100.0.0",
+            "prefix_len": 16,
+            "gate": 0
+          }
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "10.2.0.1",
+            "prefix_len": 32,
+            "gate": 0
+          }
+        ],
+        [
+          "create_module",
+          "coreDstMACAABBCC000002",
+          "Update",
+          {
+            "dst_mac": "aa:bb:cc:00:00:02"
+          }
+        ],
+        [
+          "connect",
+          "coreRoutes",
+          0,
+          "coreDstMACAABBCC000002",
+          0
+        ],
+        [
+          "connect",
+          "coreDstMACAABBCC000002",
+          0,
+          "coreMerge",
+          0
+        ],
+        [
+          "module_command",
+          "coreRoutes",
+          "add",
+          {
+            "prefix": "0.0.0.0",
+            "prefix_len": 0,
+            "gate": 0
+          }
+        ]
+      ]
+    },
+    {
+      "route_add": {
+        "dst": "0.0.0.0/0",
+        "gw": "10.2.0.1",
+        "oif": 3
+      }
+    },
+    {
+      "expect": []
+    },
+    {
+      "route_add": {
+        "dst": "10.100.0.0/16",
+        "gw": "10.1.0.1",
+        "oif": 2
+      }
+    },
+    {
+      "expect": []
+    },
+    {
+      "expect_state": {
+        "forwarding": {
+          "accessRoutes": {
+            "0.0.0.0/0": "drop",
+            "10.1.0.1/32": {
+              "dst_mac": "aa:bb:cc:00:00:01",
+              "to": "accessMerge"
+            },
+            "10.100.0.0/16": {
+              "dst_mac": "aa:bb:cc:00:00:01",
+              "to": "accessMerge"
+            }
+          },
+          "coreRoutes": {
+            "0.0.0.0/0": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            },
+            "10.2.0.1/32": {
+              "dst_mac": "aa:bb:cc:00:00:02",
+              "to": "coreMerge"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
